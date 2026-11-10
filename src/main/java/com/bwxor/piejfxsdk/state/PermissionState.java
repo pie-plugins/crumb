@@ -14,6 +14,9 @@ public class PermissionState {
 
     private volatile Map<String, Permission> permissions = new ConcurrentHashMap<>(DEFAULTS);
 
+    /** Permission per MCP server name, from the "mcpServers" section of permissions.json. */
+    private volatile Map<String, Permission> mcpServerPermissions = Map.of();
+
     private PermissionState() {}
 
     private static Map<String, Permission> defaults() {
@@ -30,8 +33,17 @@ public class PermissionState {
         this.permissions = new ConcurrentHashMap<>(permissions);
     }
 
+    public void setMcpServerPermissions(Map<String, Permission> mcpServerPermissions) {
+        this.mcpServerPermissions = Map.copyOf(mcpServerPermissions);
+    }
+
     /** Tools that are not listed in permissions.json always prompt. */
     public Permission getPermission(String toolName) {
         return permissions.getOrDefault(toolName, Permission.PROMPT);
+    }
+
+    /** MCP servers that are not listed in permissions.json always prompt. */
+    public Permission getMcpServerPermission(String serverName) {
+        return mcpServerPermissions.getOrDefault(serverName, Permission.PROMPT);
     }
 }

@@ -56,8 +56,9 @@ public class CrumbPlugin implements Plugin {
 
         try {
             serviceState.getConfigurationService().loadMcpServers();
+            registerMcpServers();
         } catch (IOException e) {
-            serviceState.getNotificationService().showNotificationOk("Error loading MCP servers configuration.");
+            serviceState.getNotificationService().showNotificationOk("Error loading MCP servers configuration: " + e.getMessage());
         }
 
         try {
@@ -88,6 +89,7 @@ public class CrumbPlugin implements Plugin {
 
                 if (configurationState.getApiKey() != null && !configurationState.getApiKey().trim().isEmpty()) {
                     serviceState.setClaudeMessageService(new ClaudeMessageService(configurationState.getApiKey(), configurationState.getModel()));
+                    registerMcpServers();
                 }
             } catch (IOException e) {
                 serviceState.getNotificationService().showNotificationOk("Error loading your Crumb configuration.");
@@ -97,8 +99,9 @@ public class CrumbPlugin implements Plugin {
         if (file.getPath().equals(Paths.get(configurationState.getConfigurationDirectory().toString(), "mcp_servers.json").toString())) {
             try {
                 serviceState.getConfigurationService().loadMcpServers();
+                registerMcpServers();
             } catch (IOException e) {
-                serviceState.getNotificationService().showNotificationOk("Error loading MCP servers configuration.");
+                serviceState.getNotificationService().showNotificationOk("Error loading MCP servers configuration: " + e.getMessage());
             }
         }
 
@@ -108,6 +111,14 @@ public class CrumbPlugin implements Plugin {
             } catch (IOException e) {
                 serviceState.getNotificationService().showNotificationOk("Error loading permissions configuration: " + e.getMessage());
             }
+        }
+    }
+
+    /** Hands the configured MCP servers to the message service so their tools become available to the agent. */
+    private void registerMcpServers() {
+        ClaudeMessageService claudeMessageService = ServiceState.instance.getClaudeMessageService();
+        if (claudeMessageService != null) {
+            claudeMessageService.registerMcpServers(MCPServerState.instance.getServers());
         }
     }
 

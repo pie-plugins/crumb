@@ -38,6 +38,7 @@ public class ConfigurationService {
         }
     }
 
+    /** Reads mcp_servers.json (creating it if missing) into MCPServerState. */
     public void loadMcpServers() throws IOException {
         File mcpFile = new File(Paths.get(ConfigurationState.instance.getConfigurationDirectory().toString(), "mcp_servers.json").toUri());
 
@@ -47,12 +48,16 @@ public class ConfigurationService {
             String content = bufferedReader.readAllAsString();
             JSONObject jsonObject = new JSONObject(content);
             MCPServerState.fromJson(jsonObject);
+        } catch (JSONException e) {
+            // Keep the previous servers in place and let the caller notify the user.
+            throw new IOException("Invalid mcp_servers.json: " + e.getMessage(), e);
         }
     }
 
     /**
      * Loads permissions.json (creating it with defaults if missing). Tools missing from the file keep their
      * default permission; unrecognised values are treated as "prompt".
+     * The optional "mcpServers" section maps MCP server names to a permission; servers not listed are denied.
      */
     public void loadPermissions() throws IOException {
         File permissionsFile = new File(Paths.get(ConfigurationState.instance.getConfigurationDirectory().toString(), "permissions.json").toUri());
@@ -68,6 +73,15 @@ public class ConfigurationService {
                 loaded.put(toolName, Permission.fromString(entries.optString(toolName, null)));
             }
             PermissionState.instance.setPermissions(loaded);
+
+            Map<String, Permission> mcpLoaded = new LinkedHashMap<>();
+            JSONObject mcpEntries = root.optJSONObject("mcpServers");
+            if (mcpEntries != null) {
+                for (String serverName : mcpEntries.keySet()) {
+                    mcpLoaded.put(serverName, Permission.fromString(mcpEntries.optString(serverName, null)));
+                }
+            }
+            PermissionState.instance.setMcpServerPermissions(mcpLoaded);
         } catch (JSONException e) {
             // Keep the previous permissions in place and let the caller notify the user.
             throw new IOException("Invalid permissions.json: " + e.getMessage(), e);
@@ -149,6 +163,7 @@ public class ConfigurationService {
 
         JSONObject root = new JSONObject();
         root.put("permissions", entries);
+        root.put("mcpServers", new JSONObject());
 
         try (BufferedWriter bufferedWriter = new BufferedWriter(new FileWriter(permissionsFile))) {
             bufferedWriter.write(root.toString(INDENT_FACTOR));

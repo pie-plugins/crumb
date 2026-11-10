@@ -11,6 +11,7 @@ module com.bwxor.piejfxsdk {
     requires one.jpro.platform.mdfx;
     requires com.fasterxml.jackson.annotation;
     requires java.net.http;
+    requires io.modelcontextprotocol.sdk.mcp.core;
 
     opens com.bwxor.piejfxsdk to javafx.fxml;
     exports com.bwxor.piejfxsdk;

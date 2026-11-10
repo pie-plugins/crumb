@@ -9,6 +9,7 @@ import com.bwxor.piejfxsdk.dto.DelegateTaskReturnItem;
 import com.bwxor.piejfxsdk.dto.Session;
 import com.bwxor.piejfxsdk.dto.ToolUseDisplayItem;
 import com.bwxor.piejfxsdk.factory.MessageFactory;
+import com.bwxor.piejfxsdk.state.MCPServerState.MCPServer;
 import com.bwxor.piejfxsdk.state.OpenedFolderState;
 import com.bwxor.piejfxsdk.state.PermissionState;
 import com.bwxor.piejfxsdk.state.ServiceState;
@@ -17,13 +18,19 @@ import com.bwxor.piejfxsdk.state.UIState;
 import com.bwxor.piejfxsdk.tool.*;
 import com.bwxor.piejfxsdk.type.Permission;
 import com.bwxor.piejfxsdk.type.Role;
+import io.modelcontextprotocol.client.McpClient;
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
+import io.modelcontextprotocol.spec.McpClientTransport;
+import io.modelcontextprotocol.spec.McpSchema;
 import javafx.application.Platform;
-import javafx.scene.control.Alert;
-import javafx.scene.control.ButtonType;
 
 import java.io.File;
+import java.net.URI;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -35,6 +42,8 @@ public class ClaudeMessageService {
     private static final Integer TOKEN_AMOUNT_TO_CLEAR_AT_LEAST = 20_000;
     // REVIEW: how many review -> fix cycles before remaining issues are just shown to the user
     private static final int MAX_REVIEW_ROUNDS = 2;
+    private static final int MAX_TOOL_NAME_LENGTH = 64;
+    private static final String MCP_DISPLAY_SYMBOL = "\uD83D\uDD0C";
     private static final String SYSTEM_PROMPT = """
             You are a coding agent working inside the user's workspace in the Pie editor.
             
@@ -62,6 +71,11 @@ public class ClaudeMessageService {
     private ReviewService reviewService;
     private boolean reviewEnabled = true;
 
+    // MCP: connected servers, the tools they expose (as Anthropic tool definitions) and how to call each tool
+    private final List<McpSyncClient> mcpClients = new CopyOnWriteArrayList<>();
+    private final List<BetaTool> mcpToolDefinitions = new CopyOnWriteArrayList<>();
+    private final Map<String, McpToolBinding> mcpToolBindings = new ConcurrentHashMap<>();
+
     public ClaudeMessageService(String apiKey, String model) {
         this.client = AnthropicOkHttpClient.builder()
                 .authToken(apiKey)
@@ -71,6 +85,46 @@ public class ClaudeMessageService {
         this.model = model;
         // REVIEW
         this.reviewService = new ReviewService(client, model);
+    }
+
+    /**
+     * Connects to the configured MCP servers and registers the tools they expose. Servers that fail to connect
+     * are skipped. Replaces any servers registered earlier by this service. Tools of servers without a permission
+     * entry in permissions.json are still registered, but calls to them are refused.
+     */
+    public void registerMcpServers(List<MCPServer> servers) {
+        closeMcpClients();
+
+        for (MCPServer server : servers) {
+            if (server.getName() == null || server.getName().isBlank() || server.getUrl() == null || server.getUrl().isBlank()) {
+                System.out.println("Skipping MCP server with missing name or url: " + server.getName());
+                continue;
+            }
+
+            McpSyncClient mcp;
+            try {
+                mcp = connect(server);
+            } catch (Exception e) {
+                System.out.println("MCP server '" + server.getName() + "' is unavailable: " + e.getMessage());
+                continue;
+            }
+
+            try {
+                for (McpSchema.Tool tool : mcp.listTools().tools()) {
+                    String exposedName = exposedToolName(server.getName(), tool.name());
+                    if (mcpToolBindings.containsKey(exposedName)) {
+                        System.out.println("Skipping duplicate MCP tool '" + exposedName + "'");
+                        continue;
+                    }
+                    mcpToolBindings.put(exposedName, new McpToolBinding(server.getName(), mcp, tool.name()));
+                    mcpToolDefinitions.add(toBetaTool(exposedName, tool));
+                }
+                mcpClients.add(mcp);
+            } catch (Exception e) {
+                System.out.println("Could not list tools of MCP server '" + server.getName() + "': " + e.getMessage());
+                mcp.closeGracefully();
+            }
+        }
     }
 
     public void sendAgentic(String prompt, int maxIterations, Consumer<String> displayFunction, Consumer<ToolUseDisplayItem> toolUseDisplayFunction, Consumer<Boolean> toggleWorkingFunction, Consumer<Double> progressBarFunction, Consumer<Long> usedTokensFunction, Consumer<String> errorFunction, Runnable openFolderRunnable) {
@@ -85,7 +139,7 @@ public class ClaudeMessageService {
             System.out.println("[" + sessionState.getCurrentSessionIndex() + "] User: " + prompt);
 
             if (currentSession.getConversation() == null) {
-                currentSession.setConversation(MessageCreateParams.builder()
+                var conversation = MessageCreateParams.builder()
                         .model(this.model)
                         .maxTokens(16000)
                         .system(SYSTEM_PROMPT)
@@ -94,7 +148,11 @@ public class ClaudeMessageService {
                         .addTool(WriteWorkspaceFile.class)
                         .addTool(ExecuteTerminalCommand.class)
                         .addTool(DelegateTask.class)
-                        .putAdditionalBodyProperty("session_id", JsonValue.from(currentSession.getId())));
+                        .putAdditionalBodyProperty("session_id", JsonValue.from(currentSession.getId()));
+
+                mcpToolDefinitions.forEach(tool -> conversation.addTool(tool));
+
+                currentSession.setConversation(conversation);
 
                 if (isClaude) {
                     currentSession.getConversation()
@@ -327,8 +385,7 @@ public class ClaudeMessageService {
             conversation.addUserMessage("""
                     `%s` failed. Fix the compilation errors, then update CHANGES.md and give a short summary.
                     
-                    %s"""
-                    .formatted(result.command(), result.output()));
+                    %s""".formatted(result.command(), result.output()));
             return true;
         }
 
@@ -348,7 +405,12 @@ public class ClaudeMessageService {
         }
     }
 
-    private static Object callTool(BetaToolUseBlock toolUseBlock, Set<String> changedFiles, Consumer<ToolUseDisplayItem> toolUseDisplayFunction, Runnable openFolderRunnable) {
+    private Object callTool(BetaToolUseBlock toolUseBlock, Set<String> changedFiles, Consumer<ToolUseDisplayItem> toolUseDisplayFunction, Runnable openFolderRunnable) {
+        McpToolBinding mcpBinding = mcpToolBindings.get(toolUseBlock.name());
+        if (mcpBinding != null) {
+            return callMcpTool(toolUseBlock, mcpBinding, toolUseDisplayFunction);
+        }
+
         Class<? extends BuiltInTool<?>> clazz;
 
         String displaySymbol;
@@ -399,6 +461,108 @@ public class ClaudeMessageService {
         return result;
     }
 
+    /**
+     * Calls a tool on an MCP server. The server's permission comes from permissions.json ("mcpServers" section).
+     * A server without an entry has no permission and is refused.
+     */
+    private Object callMcpTool(BetaToolUseBlock toolUseBlock, McpToolBinding binding, Consumer<ToolUseDisplayItem> toolUseDisplayFunction) {
+        String serverName = binding.serverName();
+        Permission permission = PermissionState.instance.getMcpServerPermission(serverName);
+
+        if (permission == Permission.DENY) {
+            return "The MCP server '" + serverName + "' is denied by the user's permission settings (no permission is set for it in permissions.json). Do not retry it; continue without it or ask the user how to proceed.";
+        }
+
+        if (permission == Permission.PROMPT && !askApproval(MCP_DISPLAY_SYMBOL + " " + toolUseBlock.name(), toolUseBlock._input().toString())) {
+            return "The user denied this action. Do not retry it; continue without it or ask the user how to proceed.";
+        }
+
+        toolUseDisplayFunction.accept(new ToolUseDisplayItem(MCP_DISPLAY_SYMBOL + " " + toolUseBlock.name(), toolUseBlock._input().toString()));
+
+        try {
+            Map<String, Object> arguments = new HashMap<>();
+            Map<?, ?> input = toolUseBlock.input(Map.class);
+            if (input != null) {
+                input.forEach((key, value) -> arguments.put(String.valueOf(key), value));
+            }
+
+            McpSchema.CallToolResult result = binding.client().callTool(new McpSchema.CallToolRequest(binding.toolName(), arguments));
+
+            String text = result.content().stream()
+                    .filter(c -> c instanceof McpSchema.TextContent)
+                    .map(c -> ((McpSchema.TextContent) c).text())
+                    .collect(Collectors.joining(NEWLINE_STRING));
+
+            return Boolean.TRUE.equals(result.isError()) ? "Error: " + text : text;
+        } catch (Exception e) {
+            // Report MCP failures to the agent instead of breaking the loop.
+            e.printStackTrace();
+            return "Error: MCP tool " + binding.toolName() + " on server '" + serverName + "' failed: " + e.getMessage();
+        }
+    }
+
+    private static McpSyncClient connect(MCPServer server) {
+        URI uri = URI.create(server.getUrl());
+        if (uri.getScheme() == null || uri.getRawAuthority() == null
+                || !(uri.getScheme().equals("http") || uri.getScheme().equals("https"))) {
+            throw new IllegalArgumentException("url must be an http or https address: " + server.getUrl());
+        }
+
+        // The config holds the full URL; the transport wants the base address and the endpoint path separately.
+        String base = uri.getScheme() + "://" + uri.getRawAuthority();
+        String path = uri.getRawPath();
+        String endpoint = (path == null || path.isEmpty()) ? "/mcp" : path;
+
+        McpClientTransport transport = HttpClientStreamableHttpTransport.builder(base)
+                .endpoint(endpoint)
+                .build();
+        McpSyncClient mcp = McpClient.sync(transport)
+                .clientInfo(new McpSchema.Implementation("crumb", "1.0.0"))
+                .build();
+        try {
+            mcp.initialize();
+        } catch (RuntimeException e) {
+            mcp.closeGracefully();
+            throw e;
+        }
+        return mcp;
+    }
+
+    private void closeMcpClients() {
+        mcpClients.forEach(McpSyncClient::closeGracefully);
+        mcpClients.clear();
+        mcpToolDefinitions.clear();
+        mcpToolBindings.clear();
+    }
+
+    /** Tool names are sent to the model, so they are prefixed with the server and limited to the allowed characters. */
+    private static String exposedToolName(String serverName, String toolName) {
+        String name = ("mcp__" + serverName + "__" + toolName).replaceAll("[^a-zA-Z0-9_-]", "_");
+        return name.length() > MAX_TOOL_NAME_LENGTH ? name.substring(0, MAX_TOOL_NAME_LENGTH) : name;
+    }
+
+    private static BetaTool toBetaTool(String exposedName, McpSchema.Tool tool) {
+        Map<String, Object> schema = tool.inputSchema() != null ? tool.inputSchema() : Map.of();
+
+        var properties = BetaTool.InputSchema.Properties.builder();
+        if (schema.get("properties") instanceof Map<?, ?> props) {
+            props.forEach((key, value) -> properties.putAdditionalProperty(String.valueOf(key), JsonValue.from(value)));
+        }
+
+        var inputSchema = BetaTool.InputSchema.builder()
+                .type(JsonValue.from("object"))
+                .properties(properties.build());
+        if (schema.get("required") instanceof List<?> required) {
+            inputSchema.required(required.stream().map(String::valueOf).toList());
+        }
+
+        return BetaTool.builder()
+                .name(exposedName)
+                .description(tool.description() == null ? "" : tool.description())
+                .inputSchema(inputSchema.build())
+                .build();
+    }
+
     private static boolean askApproval(String title, String details) {
         UIState uiState = UIState.instance;
 
@@ -408,4 +572,7 @@ public class ClaudeMessageService {
                 .add(MessageFactory.createApprovalMessage(title, details, answer, () -> uiState.getMessageHistoryVBox().getChildren().removeLast())));
         return answer.join();
     }
+
+    /** An MCP tool as seen by the agent: which server it belongs to, the live client, and the tool's own name. */
+    private record McpToolBinding(String serverName, McpSyncClient client, String toolName) {}
 }

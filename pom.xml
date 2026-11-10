@@ -102,6 +102,13 @@
             <artifactId>anthropic-java</artifactId>
             <version>2.52.0</version>
         </dependency>
+        <!-- MCP Server -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp</artifactId>
+            <version>2.2.0-M2</version>
+            <scope>compile</scope>
+        </dependency>
         <!-- Markdown Rendering -->
         <dependency>
             <groupId>one.jpro.platform</groupId>
