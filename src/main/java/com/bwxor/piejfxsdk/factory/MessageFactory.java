@@ -1,6 +1,6 @@
 package com.bwxor.piejfxsdk.factory;
 
-import com.bwxor.piejfxsdk.control.StyledMarkdownView;
+import com.bwxor.piejfxsdk.control.AssistantMessageView;
 import com.bwxor.piejfxsdk.state.UIState;
 import javafx.animation.Animation;
 import javafx.animation.KeyFrame;
@@ -14,7 +14,6 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
-import one.jpro.platform.mdfx.MarkdownView;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -37,9 +36,8 @@ public class MessageFactory {
         return label;
     }
 
-    public static MarkdownView createAssistantMessage(String message) {
-        var markdown = new StyledMarkdownView(message);
-        return markdown;
+    public static AssistantMessageView createAssistantMessage(String message) {
+        return new AssistantMessageView(message);
     }
 
     public static VBox createApprovalMessage(String title, String inputs, CompletableFuture<Boolean> answer, Runnable removeMessageRunnable) {

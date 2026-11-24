@@ -194,6 +194,12 @@ public class ClaudeMessageService {
         // REVIEW: files written in this task, tracked from actual tool calls (not from CHANGES.md)
         int reviewRounds = 0;
 
+        // Every tool call shown in the chat is also stored in the session, so it can be shown again when the chat is reopened
+        Consumer<ToolUseDisplayItem> recordingToolUseDisplayFunction = toolUseDisplayItem -> {
+            currentSession.getMessages().add(new com.bwxor.piejfxsdk.dto.Message(toolUseDisplayItem.toolName(), Role.TOOL_USE, toolUseDisplayItem.inputs()));
+            toolUseDisplayFunction.accept(toolUseDisplayItem);
+        };
+
         for (int i = 0; i < maxIterations; i++) {
             if (i > 0) {
                 displayFunction.accept(NEWLINE_STRING);
@@ -294,16 +300,13 @@ public class ClaudeMessageService {
 
             // if no tool use blocks, show only text and end iteration
             if (toolUseBlocks.isEmpty()) {
-                var assistantBlocksText = assistantBlocks.stream()
-                        .flatMap(cb -> cb.text().stream())
-                        .map(BetaTextBlockParam::text)
-                        .collect(Collectors.joining()).strip();
+                var assistantBlocksText = textOf(assistantBlocks);
 
                 // REVIEW: before accepting "done", check that the project compiles
                 if (reviewEnabled && !changedFiles.isEmpty()) {
                     boolean sentBackForFixes = review(openedFolder, changedFiles, reviewRounds,
                             currentSession.getConversation(), assistantBlocks.isEmpty(),
-                            displayFunction, toolUseDisplayFunction);
+                            displayFunction, recordingToolUseDisplayFunction);
                     if (sentBackForFixes) {
                         reviewRounds++;
                         continue;
@@ -312,6 +315,12 @@ public class ClaudeMessageService {
 
                 currentSession.getMessages().add(new com.bwxor.piejfxsdk.dto.Message(assistantBlocksText, Role.ASSISTANT));
                 return;
+            }
+
+            // The text the model wrote before its tool calls is stored too, so the history matches what was shown
+            String textBeforeToolUse = textOf(assistantBlocks);
+            if (!textBeforeToolUse.isEmpty()) {
+                currentSession.getMessages().add(new com.bwxor.piejfxsdk.dto.Message(textBeforeToolUse, Role.ASSISTANT));
             }
 
             // REVIEW: remember which files the agent wrote
@@ -326,7 +335,7 @@ public class ClaudeMessageService {
                     .map(tub -> BetaContentBlockParam.ofToolResult(
                             BetaToolResultBlockParam.builder()
                                     .toolUseId(tub.id())
-                                    .contentAsJson(callTool(tub, changedFiles, toolUseDisplayFunction, openFolderRunnable))
+                                    .contentAsJson(callTool(tub, changedFiles, recordingToolUseDisplayFunction, openFolderRunnable))
                                     .build()))
                     .toList();
 
@@ -335,6 +344,14 @@ public class ClaudeMessageService {
         }
 
         displayFunction.accept("Hit max iterations without completing.");
+    }
+
+    /** The text of the given content blocks, joined and stripped. */
+    private static String textOf(List<BetaContentBlockParam> blocks) {
+        return blocks.stream()
+                .flatMap(cb -> cb.text().stream())
+                .map(BetaTextBlockParam::text)
+                .collect(Collectors.joining()).strip();
     }
 
     /**

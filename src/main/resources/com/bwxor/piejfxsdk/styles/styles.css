@@ -267,3 +267,27 @@
 .markdown-code-block:hover .code-copy-button {
     -fx-opacity: 1.0;
 }
+
+/* ---------- CODE TEXT BOX (fenced code in assistant answers) ---------- */
+
+.crumb-code-textbox {
+    -fx-background-color: bg-hover;
+    -fx-background-radius: 8px;
+    -fx-border-radius: 8px;
+    -fx-border-color: bg-hover;
+    -fx-border-width: 0.5px;
+    -fx-text-fill: text-primary;
+    -fx-font-family: "monospace";
+    -fx-focus-color: transparent;
+    -fx-faint-focus-color: transparent;
+}
+
+.crumb-code-textbox > .scroll-pane,
+.crumb-code-textbox .content {
+    -fx-background-color: bg-hover;
+    -fx-border-color: transparent;
+}
+
+.crumb-code-textbox .content .text {
+    -fx-fill: text-primary;
+}

@@ -129,6 +129,27 @@
                     <target>25</target>
                 </configuration>
             </plugin>
+            <!-- The host loads a plugin from its folder: the plugin jar plus a "deps" folder with its dependencies.
+                 Copy the runtime dependencies to target/deps. Artifacts the host already provides are left out. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.8.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-plugin-dependencies</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/deps</outputDirectory>
+                            <includeScope>runtime</includeScope>
+                            <excludeGroupIds>org.openjfx,org.controlsfx,com.bwxor,org.json</excludeGroupIds>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

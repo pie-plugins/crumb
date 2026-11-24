@@ -1,5 +1,6 @@
 package com.bwxor.piejfxsdk.factory;
 
+import com.bwxor.piejfxsdk.control.AssistantMessageView;
 import com.bwxor.piejfxsdk.dto.Session;
 import com.bwxor.piejfxsdk.mapper.MapLargeNumbersToString;
 import com.bwxor.piejfxsdk.state.*;
@@ -20,7 +21,6 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.scene.text.TextAlignment;
-import one.jpro.platform.mdfx.MarkdownView;
 
 public class TabFactory {
     public static Tab createClaudeAgentTab() {
@@ -226,14 +226,14 @@ public class TabFactory {
         UIState uiState = UIState.instance;
         OpenedFolderState openedFolderState = OpenedFolderState.instance;
 
-        final MarkdownView markdownView = MessageFactory.createAssistantMessage("");
+        final AssistantMessageView markdownView = MessageFactory.createAssistantMessage("");
         uiState.getMessageHistoryVBox().getChildren().add(markdownView);
 
         Task<String> task = new Task<>() {
             @Override
             protected String call() {
                 String result[] = new String[1];
-                final MarkdownView[] currentMarkdown = {markdownView};
+                final AssistantMessageView[] currentMarkdown = {markdownView};
 
                 final Node[] workingMessage = {null};
 
@@ -298,6 +298,8 @@ public class TabFactory {
                     uiState.getMessageHistoryVBox().getChildren().add(MessageFactory.createUserMessage(message.content()));
                 } else if (message.role().equals(Role.ASSISTANT)) {
                     uiState.getMessageHistoryVBox().getChildren().add(MessageFactory.createAssistantMessage(message.content()));
+                } else if (message.role().equals(Role.TOOL_USE)) {
+                    uiState.getMessageHistoryVBox().getChildren().add(MessageFactory.createToolUseMessage(message.content(), message.inputs()));
                 }
             }
         }
